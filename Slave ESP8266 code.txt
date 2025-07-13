@@ -1,0 +1,91 @@
+/*Features:
+
+IR receiver
+
+Sends received IR codes to Master via ESP-NOW
+
+Listens for relay toggle commands from Master
+
+Controls relays 5–8 (connected to D6, D1, D2, D3)*/
+
+
+
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+#include <espnow.h>
+
+// ---------- Configuration ----------
+#define IR_RECV_PIN D5
+const uint8_t relayPins[4] = {D6, D1, D2, D3};  // Controls relay 5–8
+
+IRrecv irrecv(IR_RECV_PIN);
+decode_results results;
+bool relayStates[4] = {LOW, LOW, LOW, LOW};  // Relays 5–8
+
+// Master ESP MAC address (same as in master code)
+uint8_t masterMac[] = {0x08, 0xF9, 0xE0, 0x6A, 0xEE, 0x30};
+
+// ---------- Setup ----------
+void setup() {
+  Serial.begin(115200);
+
+  // Relay setup
+  for (int i = 0; i < 4; i++) {
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], relayStates[i]);
+  }
+
+  // IR setup
+  irrecv.enableIRIn();
+  Serial.println("IR Receiver ready");
+
+  // WiFi Station mode (required for ESP-NOW)
+  WiFi.mode(WIFI_STA);
+
+  // ESP-NOW init
+  if (esp_now_init() != 0) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+
+  // Set role
+  esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+  esp_now_add_peer(masterMac, ESP_NOW_ROLE_CONTROLLER, 1, NULL, 0);
+
+  // Receive relay toggle commands from master
+  esp_now_register_recv_cb(onDataRecv);
+
+  Serial.println("Slave ESP Ready");
+}
+
+// ---------- Main Loop ----------
+void loop() {
+  if (irrecv.decode(&results)) {
+    Serial.print("Sending IR code to master: ");
+    Serial.println(results.value, HEX);
+
+    uint32_t irCode = results.value;
+    esp_now_send(masterMac, (uint8_t*)&irCode, sizeof(irCode));
+
+    irrecv.resume();  // Prepare for next IR signal
+  }
+}
+
+// ---------- ESP-NOW Data Receive ----------
+void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
+  if (len != 1) return;
+
+  uint8_t relayIndex = data[0];
+
+  if (relayIndex >= 4 && relayIndex < 8) {
+    uint8_t localIndex = relayIndex - 4;
+    relayStates[localIndex] = !relayStates[localIndex];
+    digitalWrite(relayPins[localIndex], relayStates[localIndex]);
+
+    Serial.print("Toggled Relay ");
+    Serial.println(relayIndex + 1);
+  }
+}

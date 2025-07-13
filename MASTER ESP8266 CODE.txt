@@ -1,0 +1,172 @@
+/*Features:
+
+Web server for app control (/relay1/toggle to /relay8/toggle)
+
+Local control of relays 1–4
+
+IR remote reception (8 codes total)
+
+Receives IR codes from Slave via ESP-NOW
+
+Sends ESP-NOW toggle commands for relays 5–8 (on Slave)*/
+
+
+
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+#include <espnow.h>
+
+// ----------- Configuration ------------
+
+// Relay pins (for master relays 1–4)
+const uint8_t relayPins[4] = {D6, D1, D2, D3};
+
+// Corresponding IR codes for all 8 relays
+const uint32_t relayIRCodes[8] = {
+  0xFFCA35, 0xFF8A75, 0xFF12ED, 0xFF629D, // Master relays 1–4
+  0xFF4AB5, 0xFFA25D, 0xFF2AD5, 0xFF3AC5  // Slave relays 5–8
+};
+
+// Slave ESP MAC address (replace with actual MAC)
+uint8_t slaveMac[] = {0xC4, 0x5B, 0xBE, 0x6F, 0x95, 0xEA};
+
+// IR receiver pin
+#define IR_RECV_PIN D5
+IRrecv irrecv(IR_RECV_PIN);
+decode_results results;
+
+ESP8266WebServer server(80);
+bool relayStates[8] = {LOW, LOW, LOW, LOW, LOW, LOW, LOW, LOW};
+
+// ---------- Function Prototypes ----------
+void toggleRelay(uint8_t index);
+void sendToSlave(uint8_t relayIndex);
+void handleIR(uint32_t irCode);
+void receiveIRFromSlave(uint8_t *mac, uint8_t *data, uint8_t len);
+void setupWebServer();
+void handleToggle(uint8_t relayIndex);
+
+// ----------- Setup ----------------------
+void setup() {
+  Serial.begin(115200);
+
+  // Set relay pins
+  for (int i = 0; i < 4; i++) {
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], relayStates[i]);
+  }
+
+  // IR setup
+  irrecv.enableIRIn();
+
+  // WiFi in AP mode
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("ESP-Master", "12345678");
+  Serial.print("Master IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  // ESP-NOW init
+  if (esp_now_init() != 0) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+
+  // Register slave
+  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
+  esp_now_add_peer(slaveMac, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+
+  // Receive IR codes forwarded by slave
+  esp_now_register_recv_cb(receiveIRFromSlave);
+
+  // Start web server
+  setupWebServer();
+}
+
+// ---------- Main Loop -------------------
+void loop() {
+  server.handleClient();
+
+  if (irrecv.decode(&results)) {
+    handleIR(results.value);
+    irrecv.resume();
+  }
+}
+
+// ---------- Web Server Handlers ----------
+void setupWebServer() {
+  for (int i = 0; i < 8; i++) {
+    server.on("/relay" + String(i + 1) + "/toggle", [i]() {
+      handleToggle(i);
+    });
+  }
+
+  server.on("/status", []() {
+    String json = "{";
+    for (int i = 0; i < 8; i++) {
+      json += "\"relay" + String(i + 1) + "\":" + String(relayStates[i]);
+      if (i < 7) json += ",";
+    }
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  server.onNotFound([]() {
+    server.send(404, "text/plain", "Route Not Found");
+  });
+
+  server.begin();
+  Serial.println("Web server started");
+}
+
+void handleToggle(uint8_t relayIndex) {
+  if (relayIndex < 4) {
+    toggleRelay(relayIndex);
+  } else {
+    sendToSlave(relayIndex);
+  }
+  server.send(200, "text/plain", "Relay " + String(relayIndex + 1) + " toggled");
+}
+
+// ---------- Relay Control ----------
+void toggleRelay(uint8_t index) {
+  relayStates[index] = !relayStates[index];
+  if (index < 4) {
+    digitalWrite(relayPins[index], relayStates[index]);
+  }
+  Serial.println("Toggled Relay " + String(index + 1));
+}
+
+void sendToSlave(uint8_t relayIndex) {
+  uint8_t data = relayIndex; // Just the relay index
+  esp_now_send(slaveMac, &data, 1);
+  Serial.println("Sent toggle to Slave for Relay " + String(relayIndex + 1));
+}
+
+// ---------- IR Handler ----------
+void handleIR(uint32_t irCode) {
+  Serial.print("IR received: ");
+  Serial.println(irCode, HEX);
+  for (int i = 0; i < 8; i++) {
+    if (irCode == relayIRCodes[i]) {
+      if (i < 4) {
+        toggleRelay(i);
+      } else {
+        sendToSlave(i);
+      }
+      break;
+    }
+  }
+}
+
+// ---------- ESP-NOW Receive Handler ----------
+void receiveIRFromSlave(uint8_t *mac, uint8_t *data, uint8_t len) {
+  if (len != 4) return;
+  uint32_t irCode = *(uint32_t*)data;
+  Serial.print("Received IR from Slave: ");
+  Serial.println(irCode, HEX);
+  handleIR(irCode);
+}
