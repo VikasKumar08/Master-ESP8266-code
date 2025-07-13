@@ -1,0 +1,401 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
+import 'dart:convert';
+
+void main() {
+  runApp(const ESPRelayApp());
+}
+
+class ESPRelayApp extends StatelessWidget {
+  const ESPRelayApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: SplashScreen(),
+    );
+  }
+}
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  _SplashScreenState createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _navigateToRelayControlScreen();
+  }
+
+  void _navigateToRelayControlScreen() {
+    Future.delayed(const Duration(seconds: 1), () {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const RelayControlScreen()),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.teal,
+      body: Center(
+        child: Image.asset(
+          'lib/assets/ic_launcher.png', // Ensure this path is correct
+          width: 200,
+          height: 200,
+        ),
+      ),
+    );
+  }
+}
+
+class RelayControlScreen extends StatefulWidget {
+  const RelayControlScreen({super.key});
+
+  @override
+  _RelayControlScreenState createState() => _RelayControlScreenState();
+}
+
+class _RelayControlScreenState extends State<RelayControlScreen> {
+  final String baseUrl = "http://192.168.4.1"; // Replace with your ESP8266 IP
+List<bool> relayStates = List.filled(8, false);
+List<String> relayNames = List.generate(8, (i) => 'Relay ${i + 1}');
+List<int?> remainingTimes = List.filled(8, null);
+  Timer? countdownTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchRelayStates();
+    _loadRelayNames(); // Load saved names
+    _startCountdownTimer();
+  }
+
+  @override
+  void dispose() {
+    countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startCountdownTimer() {
+    countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() {
+        for (int i = 0; i < remainingTimes.length; i++) {
+          if (remainingTimes[i] != null && remainingTimes[i]! > 0) {
+            remainingTimes[i] = remainingTimes[i]! - 1;
+            if (remainingTimes[i] == 0) {
+              toggleRelay(i, turnOff: true);
+            }
+          }
+        }
+      });
+    });
+  }
+
+  Future<void> fetchRelayStates() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/status'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        setState(() {
+          for (int i = 0; i < 8; i++) {
+  relayStates[i] = data['relay${i + 1}'] == 1;
+	}
+
+        });
+      } else {
+        print('Failed to fetch relay states: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching relay states: $e');
+    }
+  }
+
+  Future<void> toggleRelay(int index, {bool? turnOff}) async {
+    String endpoint = turnOff ?? relayStates[index]
+        ? "/relay${index + 1}/off"
+        : "/relay${index + 1}/on";
+    try {
+      final response = await http.get(Uri.parse('$baseUrl$endpoint'));
+      if (response.statusCode == 200) {
+        setState(() {
+          relayStates[index] = turnOff ?? !relayStates[index];
+          if (turnOff == true) {
+            remainingTimes[index] = null;
+          }
+        });
+        // Fetch updated states after toggling
+        await fetchRelayStates();
+      } else {
+        print('Failed to toggle relay: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error toggling relay: $e');
+    }
+  }
+
+  Future<void> toggleAllRelays(bool turnOn) async {
+    for (int i = 0; i < relayStates.length; i++) {
+      if (relayStates[i] != turnOn) {
+        await toggleRelay(i, turnOff: !turnOn);
+      }
+    }
+    // Fetch updated states after toggling all relays
+    await fetchRelayStates();
+  }
+
+  Future<void> for (int i = 0; i < 8; i++) {
+  relayNames[i] = prefs.getString('relay_name_$i') ?? relayNames[i];
+}
+ async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      for (int i = 0; i < relayNames.length; i++) {
+        relayNames[i] = prefs.getString('relay_name_$i') ?? relayNames[i];
+      }
+    });
+  }
+
+  Future<void> _saveRelayName(int index, String newName) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('relay_name_$index', newName);
+  }
+
+  void renameRelay(int index) {
+    TextEditingController nameController = TextEditingController(text: relayNames[index]);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Relay'),
+        content: TextField(
+          controller: nameController,
+          decoration: const InputDecoration(labelText: 'New Name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              setState(() {
+                relayNames[index] = nameController.text;
+              });
+              await _saveRelayName(index, nameController.text); // Save to SharedPreferences
+              Navigator.pop(context);
+            },
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+  }
+
+
+  void setRelayTimer(int index) {
+    int selectedHours = 0;
+    int selectedMinutes = 0;
+    int selectedSeconds = 0;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Set Timer for ${relayNames[index]}'),
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            DropdownButton<int>(
+              value: selectedHours,
+              items: List.generate(24, (i) => i).map((hour) {
+                return DropdownMenuItem(
+                  value: hour,
+                  child: Text('$hour h'),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedHours = value ?? 0;
+                });
+              },
+            ),
+            DropdownButton<int>(
+              value: selectedMinutes,
+              items: List.generate(60, (i) => i).map((minute) {
+                return DropdownMenuItem(
+                  value: minute,
+                  child: Text('$minute m'),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedMinutes = value ?? 0;
+                });
+              },
+            ),
+            DropdownButton<int>(
+              value: selectedSeconds,
+              items: List.generate(60, (i) => i).map((second) {
+                return DropdownMenuItem(
+                  value: second,
+                  child: Text('$second s'),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedSeconds = value ?? 0;
+                });
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final duration = (selectedHours * 3600) +
+                  (selectedMinutes * 60) +
+                  selectedSeconds;
+              if (duration > 0) {
+                Navigator.pop(context);
+                await toggleRelay(index);
+                setState(() {
+                  remainingTimes[index] = duration;
+                });
+                // Fetch updated states after setting timer
+                await fetchRelayStates();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${relayNames[index]} will turn off after $duration seconds.')),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Invalid duration!')),
+                );
+              }
+            },
+            child: const Text('Set Timer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Control Panel'),
+        centerTitle: true,
+        backgroundColor: Colors.teal,
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton(
+                  onPressed: () => toggleAllRelays(true),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                  child: const Text('All DEVICE ON'),
+                ),
+                ElevatedButton(
+                  onPressed: () => toggleAllRelays(false),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  child: const Text('All DEVICE OFF'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: GridView.builder(
+              padding: const EdgeInsets.all(16.0),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: 20,
+                crossAxisSpacing: 20,
+                childAspectRatio: 0.6,
+              ),
+              itemCount: relayStates.length,
+              itemBuilder: (context, index) {
+                return Card(
+                  elevation: 5,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Text(
+                          relayNames[index],
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        Icon(
+                          Icons.lightbulb,
+                          color: relayStates[index] ? Colors.yellow : Colors.grey,
+                          size: 80,
+                        ),
+                        ElevatedButton(
+                          onPressed: () => toggleRelay(index),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: relayStates[index] ? Colors.green : Colors.red,
+                          ),
+                          child: Text(
+                            relayStates[index] ? 'Turn Off' : 'Turn On',
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        if (remainingTimes[index] != null)
+                          Text(
+                            "Time: ${remainingTimes[index]! ~/ 3600}h ${(remainingTimes[index]! % 3600) ~/ 60}m ${(remainingTimes[index]! % 60)}s",
+                            style: const TextStyle(color: Colors.blue),
+                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            IconButton(
+                              onPressed: () => renameRelay(index),
+                              icon: const Icon(Icons.edit),
+                              tooltip: 'Rename Relay',
+                            ),
+                            IconButton(
+                              onPressed: () => setRelayTimer(index),
+                              icon: const Icon(Icons.timer),
+                              tooltip: 'Set Timer',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: fetchRelayStates,
+        backgroundColor: Colors.teal,
+        tooltip: 'Refresh States',
+        child: const Icon(Icons.refresh),
+      ),
+    );
+  }
+}
